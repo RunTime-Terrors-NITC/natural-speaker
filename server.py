@@ -2,10 +2,12 @@
 """
 Piper TTS Backend Server
 Fast local TTS using Piper with pre-loaded models
+Grammar correction using Ollama LLM
 """
 
 import io
 import wave
+import httpx
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +28,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ollama settings
+OLLAMA_URL = "http://localhost:11434"
+LLM_MODEL = "qwen2:0.5b"
+
 # Model paths
 MODELS_DIR = Path(__file__).parent / "models"
 VOICES = {
@@ -41,6 +47,10 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "en_US-hfc_female-medium"
     speaker_id: Optional[int] = None
+
+
+class GrammarRequest(BaseModel):
+    text: str
 
 
 def get_voice(voice_id: str) -> PiperVoice:
@@ -70,16 +80,74 @@ async def preload_models():
         except Exception as e:
             print(f"Failed to load {voice_id}: {e}")
     print("All models loaded!")
+    
+    # Warm up the LLM
+    print("Warming up LLM...")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": LLM_MODEL, "prompt": "Hi", "stream": False},
+                timeout=60.0
+            )
+        print("LLM warmed up!")
+    except Exception as e:
+        print(f"LLM warm-up failed (non-fatal): {e}")
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "voices": list(VOICES.keys())}
+    return {"status": "ok", "voices": list(VOICES.keys()), "llm": LLM_MODEL}
 
 
 @app.get("/voices")
 async def list_voices():
     return {"voices": list(VOICES.keys())}
+
+
+@app.post("/correct")
+async def correct_grammar(request: GrammarRequest):
+    """Convert simplified/broken English to proper English"""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    prompt = f"""Convert this simplified or broken English to proper, grammatically correct English. 
+Only output the corrected sentence, nothing else. Keep it natural and conversational.
+
+Input: "{request.text}"
+Output:"""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": LLM_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 100
+                    }
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="LLM request failed")
+            
+            result = response.json()
+            corrected = result.get("response", "").strip()
+            
+            # Clean up the response - remove quotes if present
+            corrected = corrected.strip('"\'')
+            
+            return {"original": request.text, "corrected": corrected}
+            
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="LLM request timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
 
 
 @app.post("/synthesize")
@@ -125,3 +193,4 @@ async def synthesize(request: TTSRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
+
