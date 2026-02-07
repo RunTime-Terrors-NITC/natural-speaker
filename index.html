@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Piper TTS Web</title>
+
+    <!-- Import map to resolve bare module specifiers for browser -->
+    <script type="importmap">
+    {
+        "imports": {
+            "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.min.js"
+        }
+    }
+    </script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+
+        .container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 500px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+
+        select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+            background-color: white;
+        }
+
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #2980b9;
+        }
+
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .status-info {
+            background-color: #e8f4fd;
+            color: #2980b9;
+            display: block !important;
+        }
+
+        .status-error {
+            background-color: #fde8e8;
+            color: #c0392b;
+            display: block !important;
+        }
+
+        .status-success {
+            background-color: #e8f8f5;
+            color: #27ae60;
+            display: block !important;
+        }
+
+        .status-loading {
+            background-color: #fff8e5;
+            color: #856404;
+            display: block !important;
+        }
+
+        #progress-bar {
+            width: 100%;
+            height: 8px;
+            background-color: #eee;
+            border-radius: 4px;
+            margin-top: 10px;
+            overflow: hidden;
+            display: none;
+        }
+
+        #progress-bar-inner {
+            height: 100%;
+            background-color: #3498db;
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .ready-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .ready-indicator.loading {
+            background-color: #f1c40f;
+        }
+
+        .ready-indicator.ready {
+            background-color: #27ae60;
+        }
+
+        .ready-indicator.error {
+            background-color: #e74c3c;
+        }
+
+        .cache-info {
+            font-size: 0.8rem;
+            color: #666;
+            text-align: center;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Piper TTS Web</h1>
+
+        <div class="form-group">
+            <label for="text-input">Text to Speak</label>
+            <textarea id="text-input"
+                placeholder="Enter text here...">Hello there! I am running entirely in your browser using WebAssembly.</textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="voice-select">Select Voice</label>
+            <select id="voice-select">
+                <option value="en_US-hfc_female-medium">HFC Female</option>
+                <option value="en_US-hfc_male-medium">HFC Male</option>
+            </select>
+        </div>
+
+        <button id="speak-btn" disabled>
+            <span id="ready-dot" class="ready-indicator loading"></span>
+            <span id="btn-text">Checking cache...</span>
+        </button>
+        <div id="cache-info" class="cache-info"></div>
+        <div id="status"></div>
+        <div id="progress-bar">
+            <div id="progress-bar-inner"></div>
+        </div>
+        <audio id="audio-player" controls style="width: 100%; margin-top: 1rem; display: none;"></audio>
+    </div>
+
+    <script type="module">
+        import * as tts from 'https://unpkg.com/@mintplex-labs/piper-tts-web@1.0.4/dist/piper-tts-web.js';
+
+        const textInput = document.getElementById('text-input');
+        const voiceSelect = document.getElementById('voice-select');
+        const speakBtn = document.getElementById('speak-btn');
+        const btnText = document.getElementById('btn-text');
+        const readyDot = document.getElementById('ready-dot');
+        const statusDiv = document.getElementById('status');
+        const cacheInfo = document.getElementById('cache-info');
+        const audioPlayer = document.getElementById('audio-player');
+        const progressBar = document.getElementById('progress-bar');
+        const progressBarInner = document.getElementById('progress-bar-inner');
+
+        // Voices to use
+        const VOICES = ['en_US-hfc_female-medium', 'en_US-hfc_male-medium'];
+        let modelsReady = false;
+
+        function updateStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.className = '';
+            statusDiv.classList.add(`status-${type}`);
+        }
+
+        function updateProgress(percent) {
+            progressBar.style.display = 'block';
+            progressBarInner.style.width = `${percent}%`;
+        }
+
+        function hideProgress() {
+            progressBar.style.display = 'none';
+            progressBarInner.style.width = '0%';
+        }
+
+        function setReady(ready, error = false) {
+            modelsReady = ready;
+            speakBtn.disabled = !ready;
+            readyDot.className = 'ready-indicator ' + (error ? 'error' : (ready ? 'ready' : 'loading'));
+            btnText.textContent = error ? 'Error' : (ready ? 'Speak' : 'Loading...');
+        }
+
+        // Check and preload models
+        async function initModels() {
+            try {
+                // Check what's already cached in browser OPFS
+                const storedModels = await tts.stored();
+                console.log('Cached models:', storedModels);
+
+                const neededVoices = VOICES.filter(v => !storedModels.includes(v));
+
+                if (neededVoices.length === 0) {
+                    // All models cached!
+                    cacheInfo.textContent = '✓ Models cached in browser (no download needed)';
+                    setReady(true);
+                    return;
+                }
+
+                // Need to download some models
+                cacheInfo.textContent = `Downloading ${neededVoices.length} model(s)... (one-time)`;
+                updateStatus('First-time setup: downloading voice models...', 'loading');
+
+                for (const voiceId of neededVoices) {
+                    updateProgress(0);
+                    await tts.download(voiceId, (progress) => {
+                        if (progress.total > 0) {
+                            const percent = Math.round((progress.loaded / progress.total) * 100);
+                            updateProgress(percent);
+                            updateStatus(`Downloading ${voiceId}: ${percent}%`, 'loading');
+                        }
+                    });
+                    console.log(`Downloaded: ${voiceId}`);
+                }
+
+                hideProgress();
+                cacheInfo.textContent = '✓ Models cached in browser';
+                updateStatus('Ready!', 'success');
+                setTimeout(() => { statusDiv.style.display = 'none'; }, 1500);
+                setReady(true);
+
+            } catch (err) {
+                console.error('Init error:', err);
+                cacheInfo.textContent = '';
+                updateStatus(`Error: ${err.message}`, 'error');
+                setReady(false, true);
+            }
+        }
+
+        // Speech synthesis
+        let currentVoice = null;
+
+        speakBtn.addEventListener('click', async () => {
+            const text = textInput.value;
+            const voiceId = voiceSelect.value;
+
+            if (!text) {
+                updateStatus('Please enter some text.', 'error');
+                return;
+            }
+
+            speakBtn.disabled = true;
+            btnText.textContent = 'Synthesizing...';
+
+            // If voice changed, we need to reset the session
+            // The library uses a singleton that doesn't reload models on voice change
+            if (currentVoice && currentVoice !== voiceId) {
+                updateStatus('Switching voice...', 'info');
+                // Reset the singleton to force new model load
+                if (tts.TtsSession && tts.TtsSession._instance) {
+                    tts.TtsSession._instance = null;
+                }
+            }
+            currentVoice = voiceId;
+
+            updateStatus('Generating speech...', 'info');
+            const startTime = performance.now();
+
+            try {
+                // Models are already cached, so this is fast
+                const wav = await tts.predict({ text, voiceId });
+
+                const elapsed = Math.round(performance.now() - startTime);
+                console.log(`Synthesis took ${elapsed}ms`);
+
+                const url = URL.createObjectURL(wav);
+                audioPlayer.src = url;
+                audioPlayer.style.display = 'block';
+                await audioPlayer.play();
+
+                updateStatus(`Done! (${elapsed}ms)`, 'success');
+
+            } catch (err) {
+                console.error(err);
+                updateStatus(`Error: ${err.message}`, 'error');
+            } finally {
+                speakBtn.disabled = false;
+                btnText.textContent = 'Speak';
+            }
+        });
+
+        // Initialize on page load
+        initModels();
+    </script>
+</body>
+
+</html>
